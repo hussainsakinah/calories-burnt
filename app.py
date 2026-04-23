@@ -253,8 +253,6 @@ if calories_file and exercise_file:
         col1.metric("🏋️ Train R²",        f"{r2_train:.6f}")
         col2.metric("🧪 Test R²",         f"{r2_test:.6f}")
         col3.metric("📊 5-Fold CV R²",    f"{cv_r2:.6f}")
-        col4.metric("⚠️ Gap (Train−Test)", f"{gap:.6f}")
-
     
         rmse = float(np.sqrt(mse))
         mae  = float(np.mean(np.abs(Y_test.values - y_pred)))
