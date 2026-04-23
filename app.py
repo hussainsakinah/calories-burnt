@@ -8,11 +8,11 @@ import zipfile
 import os
 
 from sklearn import preprocessing
-from sklearn.model_selection import train_test_split, GridSearchCV, KFold   # BUG FIX: KFold was missing
+from sklearn.model_selection import train_test_split, GridSearchCV, KFold   
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error, r2_score                    # BUG FIX: these were never imported
+from sklearn.metrics import mean_squared_error, r2_score                    
 
 warnings.filterwarnings('ignore')
 
@@ -94,8 +94,7 @@ def train_model(df):
     )
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
-    # BUG FIX ①: include_bias=False avoids a redundant constant column that
-    #             inflates the feature space unnecessarily.
+    
     ridge_pipeline = Pipeline([
         ('poly',   PolynomialFeatures(include_bias=False)),
         ('scaler', StandardScaler()),
@@ -104,9 +103,10 @@ def train_model(df):
 
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
+
     param_grid_ridge = {
-        'poly__degree': [1, 2],                        # was [2, 3, 5]
-        'ridge__alpha': np.geomspace(1e-3, 1e3, 20),  # was geomspace(1e-9, 1e0, 10)
+        'poly__degree': [1, 2],            
+        'ridge__alpha': np.geomspace(1e-3, 1e3, 20), 
     }
 
     grid_ridge = GridSearchCV(
@@ -117,15 +117,16 @@ def train_model(df):
 
     best_ridge = grid_ridge.best_estimator_
 
-    # Evaluate strictly on the held-out test set
-    y_pred = best_ridge.predict(X_test)
-    mse    = mean_squared_error(Y_test, y_pred)
-    r2     = r2_score(Y_test, y_pred)
+    # Evaluate on held-out test set AND training set
+    y_pred       = best_ridge.predict(X_test)
+    y_pred_train = best_ridge.predict(X_train)
 
-    # Also capture CV score for transparency
-    cv_r2  = grid_ridge.best_score_
+    mse      = mean_squared_error(Y_test, y_pred)
+    r2_test  = r2_score(Y_test,  y_pred)
+    r2_train = r2_score(Y_train, y_pred_train)
+    cv_r2    = grid_ridge.best_score_
 
-    return best_ridge, grid_ridge.best_params_, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder
+    return best_ridge, grid_ridge.best_params_, mse, r2_test, r2_train, cv_r2, X_test, Y_test, y_pred, label_encoder
 
 # ─── Sidebar: Upload CSVs ────────────────────────────────────────────────────
 st.sidebar.image("https://img.icons8.com/color/96/000000/fire-element--v1.png", width=80)
@@ -195,7 +196,6 @@ if calories_file and exercise_file:
         for i, col_name in enumerate(numeric_cols):
             with cols[i % 2]:
                 fig, ax = plt.subplots(figsize=(5, 3))
-                # BUG FIX: sns.distplot is deprecated → replaced with sns.histplot + kde
                 sns.histplot(df[col_name], kde=True, ax=ax, color="#FF4500")
                 ax.set_title(col_name, color="white")
                 ax.set_facecolor("#0e1117")
@@ -243,16 +243,27 @@ if calories_file and exercise_file:
     # ── Tab 3: Model Performance ─────────────────────────────────────────────
     with tab3:
         with st.spinner("Training Ridge Regression model (this may take ~30 seconds)…"):
-            best_ridge, best_params, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
+            best_ridge, best_params, mse, r2_test, r2_train, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
 
         st.subheader("Best Hyperparameters")
-        params_df = pd.DataFrame([best_params])
-        st.dataframe(params_df, use_container_width=True)
+        st.dataframe(pd.DataFrame([best_params]), use_container_width=True)
 
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("🏋️ Train R²",        f"{r2_train:.6f}")
+        col2.metric("🧪 Test R²",         f"{r2_test:.6f}")
+        col3.metric("📊 5-Fold CV R²",    f"{cv_r2:.6f}")
+        col4.metric("⚠️ Gap (Train−Test)", f"{gap:.6f}")
+
+    
+        rmse = float(np.sqrt(mse))
+        mae  = float(np.mean(np.abs(Y_test.values - y_pred)))
+
+        st.subheader("Error Metrics")
         col1, col2, col3 = st.columns(3)
-        col1.metric("📉 MSE (test set)",     f"{mse:.4f}")
-        col2.metric("📈 R² (test set)",      f"{r2:.4f}")
-        col3.metric("📊 R² (5-fold CV)",     f"{cv_r2:.4f}")
+        col1.metric("📏 RMSE (kcal)", f"{rmse:.4f}")
+        col2.metric("📊 MAE  (kcal)", f"{mae:.4f}")
+        col3.metric("📈 R²",          f"{r2_test:.4f}")
 
         st.subheader("Actual vs Predicted Calories")
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -287,7 +298,7 @@ if calories_file and exercise_file:
         st.subheader("🔥 Predict Calories Burnt")
         st.markdown("Enter your details below and hit **Predict**.")
 
-        # BUG FIX: Replaced input() calls (notebook-only) with Streamlit widgets
+       
         with st.form("prediction_form"):
             col1, col2 = st.columns(2)
             with col1:
@@ -303,14 +314,13 @@ if calories_file and exercise_file:
             submitted = st.form_submit_button("🔥 Predict Calories", use_container_width=True)
 
         if submitted:
-            # Make sure the model is trained (it's cached)
+           
             with st.spinner("Predicting…"):
-                best_ridge, best_params, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
+                best_ridge, best_params, mse, r2_test, r2_train, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
 
                 gender_encoded = label_encoder.transform([gender])[0]
                 input_data = np.array([[gender_encoded, age, height, weight, duration, heart_rate, body_temp]])
 
-                # BUG FIX: Original code used ss.transform() (undefined); pipeline handles scaling internally
                 prediction = best_ridge.predict(input_data)[0]
 
             st.markdown(
