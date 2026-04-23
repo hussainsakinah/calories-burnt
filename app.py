@@ -104,18 +104,6 @@ def train_model(df):
 
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-    # BUG FIX ②: Original param grid included degree=[2,3,5] and
-    #             alpha as low as 1e-9.
-    #
-    #   • degree=5 on 7 features → 792 polynomial features.
-    #     With ~12 000 training rows this is severely over-parameterised.
-    #   • alpha=1e-9 ≈ zero regularisation → Ridge behaves like OLS
-    #     and memorises the (synthetically generated) training data.
-    #   Together they let the model reverse-engineer the exact formula
-    #   used to generate the Kaggle dataset, giving R²≈1.0 on the test
-    #   set — which looks great but is meaningless overfitting.
-    #
-    #   Fix: cap degree at 2, use a sensible alpha range (1e-3 → 1e3).
     param_grid_ridge = {
         'poly__degree': [1, 2],                        # was [2, 3, 5]
         'ridge__alpha': np.geomspace(1e-3, 1e3, 20),  # was geomspace(1e-9, 1e0, 10)
@@ -260,15 +248,6 @@ if calories_file and exercise_file:
         st.subheader("Best Hyperparameters")
         params_df = pd.DataFrame([best_params])
         st.dataframe(params_df, use_container_width=True)
-
-        st.info(
-            "**Why not R²=1.0?**  The original notebook used `poly__degree` up to 5 and "
-            "`ridge__alpha` as low as 1e-9 (≈ zero regularisation). Degree-5 expansion of "
-            "7 features creates 792 columns — with only ~12 000 training rows the model "
-            "memorised the dataset's synthetic formula and achieved a spurious R²≈1.0. "
-            "Fixed by capping degree at 2 and using a sensible alpha range (1e-3 → 1e3).",
-            icon="🐛"
-        )
 
         col1, col2, col3 = st.columns(3)
         col1.metric("📉 MSE (test set)",     f"{mse:.4f}")
