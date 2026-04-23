@@ -88,33 +88,56 @@ def train_model(df):
     X = data.drop(columns=["User_ID", "Calories"])
     Y = data["Calories"]
 
+    # ── Train/test split (fit ONLY on training data) ──────────────────────────
     X_train, X_test, Y_train, Y_test = train_test_split(
         X, Y, test_size=0.2, random_state=2
     )
 
+    # ── Pipeline ──────────────────────────────────────────────────────────────
+    # BUG FIX ①: include_bias=False avoids a redundant constant column that
+    #             inflates the feature space unnecessarily.
     ridge_pipeline = Pipeline([
-        ('poly', PolynomialFeatures()),
+        ('poly',   PolynomialFeatures(include_bias=False)),
         ('scaler', StandardScaler()),
-        ('ridge', Ridge())
+        ('ridge',  Ridge())
     ])
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)   # BUG FIX: kf was never defined
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
+    # BUG FIX ②: Original param grid included degree=[2,3,5] and
+    #             alpha as low as 1e-9.
+    #
+    #   • degree=5 on 7 features → 792 polynomial features.
+    #     With ~12 000 training rows this is severely over-parameterised.
+    #   • alpha=1e-9 ≈ zero regularisation → Ridge behaves like OLS
+    #     and memorises the (synthetically generated) training data.
+    #   Together they let the model reverse-engineer the exact formula
+    #   used to generate the Kaggle dataset, giving R²≈1.0 on the test
+    #   set — which looks great but is meaningless overfitting.
+    #
+    #   Fix: cap degree at 2, use a sensible alpha range (1e-3 → 1e3).
     param_grid_ridge = {
-        'poly__degree': [2, 3, 5],
-        'ridge__alpha': np.geomspace(1e-9, 1e0, 10)
+        'poly__degree': [1, 2],                        # was [2, 3, 5]
+        'ridge__alpha': np.geomspace(1e-3, 1e3, 20),  # was geomspace(1e-9, 1e0, 10)
     }
 
-    grid_ridge = GridSearchCV(ridge_pipeline, param_grid_ridge, cv=kf, scoring='r2')
+    grid_ridge = GridSearchCV(
+        ridge_pipeline, param_grid_ridge,
+        cv=kf, scoring='r2', n_jobs=-1
+    )
     grid_ridge.fit(X_train, Y_train)
 
     best_ridge = grid_ridge.best_estimator_
+
+    # Evaluate strictly on the held-out test set
     y_pred = best_ridge.predict(X_test)
+    mse    = mean_squared_error(Y_test, y_pred)
+    r2     = r2_score(Y_test, y_pred)
 
-    mse = mean_squared_error(Y_test, y_pred)
-    r2  = r2_score(Y_test, y_pred)
+    # Also capture CV score for transparency
+    cv_r2  = grid_ridge.best_score_
 
-    return best_ridge, grid_ridge.best_params_, mse, r2, X_test, Y_test, y_pred, label_encoder
+    return best_ridge, grid_ridge.best_params_, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder
 
 # ─── Sidebar: Upload CSVs ────────────────────────────────────────────────────
 st.sidebar.image("https://img.icons8.com/color/96/000000/fire-element--v1.png", width=80)
@@ -232,15 +255,25 @@ if calories_file and exercise_file:
     # ── Tab 3: Model Performance ─────────────────────────────────────────────
     with tab3:
         with st.spinner("Training Ridge Regression model (this may take ~30 seconds)…"):
-            best_ridge, best_params, mse, r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
+            best_ridge, best_params, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
 
         st.subheader("Best Hyperparameters")
         params_df = pd.DataFrame([best_params])
         st.dataframe(params_df, use_container_width=True)
 
-        col1, col2 = st.columns(2)
-        col1.metric("📉 Mean Squared Error", f"{mse:.4f}")
-        col2.metric("📈 R² Score",           f"{r2:.4f}")
+        st.info(
+            "**Why not R²=1.0?**  The original notebook used `poly__degree` up to 5 and "
+            "`ridge__alpha` as low as 1e-9 (≈ zero regularisation). Degree-5 expansion of "
+            "7 features creates 792 columns — with only ~12 000 training rows the model "
+            "memorised the dataset's synthetic formula and achieved a spurious R²≈1.0. "
+            "Fixed by capping degree at 2 and using a sensible alpha range (1e-3 → 1e3).",
+            icon="🐛"
+        )
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📉 MSE (test set)",     f"{mse:.4f}")
+        col2.metric("📈 R² (test set)",      f"{r2:.4f}")
+        col3.metric("📊 R² (5-fold CV)",     f"{cv_r2:.4f}")
 
         st.subheader("Actual vs Predicted Calories")
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -293,7 +326,7 @@ if calories_file and exercise_file:
         if submitted:
             # Make sure the model is trained (it's cached)
             with st.spinner("Predicting…"):
-                best_ridge, best_params, mse, r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
+                best_ridge, best_params, mse, r2, cv_r2, X_test, Y_test, y_pred, label_encoder = train_model(df)
 
                 gender_encoded = label_encoder.transform([gender])[0]
                 input_data = np.array([[gender_encoded, age, height, weight, duration, heart_rate, body_temp]])
